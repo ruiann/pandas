@@ -7,8 +7,7 @@ from cpython cimport (
     PyObject_RichCompareBool,
     Py_EQ, Py_NE)
 
-from numpy cimport (int8_t, int32_t, int64_t, import_array, ndarray,
-                    NPY_INT64, NPY_DATETIME, NPY_TIMEDELTA)
+from numpy cimport int64_t, import_array, ndarray
 import numpy as np
 import_array()
 
@@ -23,25 +22,23 @@ from datetime cimport (
     pandas_datetimestruct,
     pandas_datetimestruct_to_datetime,
     pandas_datetime_to_datetimestruct,
-    PANDAS_FR_ns,
-    INT32_MIN)
+    PANDAS_FR_ns)
 
 
-cimport util, lib
-from util cimport is_period_object, is_string_object
+cimport util
+from util cimport is_period_object, is_string_object, INT32_MIN
 
-from lib cimport is_null_datetimelike, is_period
-from pandas._libs import tslib, lib
-from pandas._libs.tslib import (Timedelta, Timestamp, iNaT,
-                                NaT)
+from lib cimport is_null_datetimelike
+from pandas._libs import tslib
+from pandas._libs.tslib import Timestamp, iNaT, NaT
 from tslibs.timezones cimport (
-    is_utc, is_tzlocal, get_utcoffset, _get_dst_info, maybe_get_tz)
+    is_utc, is_tzlocal, get_utcoffset, get_dst_info, maybe_get_tz)
 from tslib cimport _nat_scalar_rules
 
+from tslibs.parsing import parse_time_string, NAT_SENTINEL
 from tslibs.frequencies cimport get_freq_code
 
 from pandas.tseries import offsets
-from pandas.core.tools.datetimes import parse_time_string
 from pandas.tseries import frequencies
 
 cdef int64_t NPY_NAT = util.get_nat()
@@ -91,12 +88,8 @@ cdef extern from "period_helper.h":
                                int microseconds, int picoseconds,
                                int freq) nogil except INT32_MIN
 
-    int64_t get_python_ordinal(int64_t period_ordinal,
-                               int freq) except INT32_MIN
-
     int get_date_info(int64_t ordinal, int freq,
                       date_info *dinfo) nogil except INT32_MIN
-    double getAbsTime(int, int64_t, int64_t)
 
     int pyear(int64_t ordinal, int freq) except INT32_MIN
     int pqyear(int64_t ordinal, int freq) except INT32_MIN
@@ -485,7 +478,7 @@ def extract_freq(ndarray[object] values):
 
         try:
             # now Timestamp / NaT has freq attr
-            if is_period(p):
+            if is_period_object(p):
                 return p.freq
         except AttributeError:
             pass
@@ -557,7 +550,7 @@ cdef _reso_local(ndarray[int64_t] stamps, object tz):
                 reso = curr_reso
     else:
         # Adjust datetime64 timestamp, recompute datetimestruct
-        trans, deltas, typ = _get_dst_info(tz)
+        trans, deltas, typ = get_dst_info(tz)
 
         _pos = trans.searchsorted(stamps, side='right') - 1
         if _pos.dtype != np.int64:
@@ -624,7 +617,7 @@ cdef ndarray[int64_t] localize_dt64arr_to_period(ndarray[int64_t] stamps,
                                            dts.us, dts.ps, freq)
     else:
         # Adjust datetime64 timestamp, recompute datetimestruct
-        trans, deltas, typ = _get_dst_info(tz)
+        trans, deltas, typ = get_dst_info(tz)
 
         _pos = trans.searchsorted(stamps, side='right') - 1
         if _pos.dtype != np.int64:
@@ -728,8 +721,7 @@ cdef class _Period(object):
         return hash((self.ordinal, self.freqstr))
 
     def _add_delta(self, other):
-        if isinstance(other, (timedelta, np.timedelta64,
-                              offsets.Tick, Timedelta)):
+        if isinstance(other, (timedelta, np.timedelta64, offsets.Tick)):
             offset = frequencies.to_offset(self.freq.rule_code)
             if isinstance(offset, offsets.Tick):
                 nanos = tslib._delta_to_nanoseconds(other)
@@ -754,12 +746,11 @@ cdef class _Period(object):
     def __add__(self, other):
         if is_period_object(self):
             if isinstance(other, (timedelta, np.timedelta64,
-                                  offsets.DateOffset,
-                                  Timedelta)):
+                                  offsets.DateOffset)):
                 return self._add_delta(other)
             elif other is NaT:
                 return NaT
-            elif lib.is_integer(other):
+            elif util.is_integer_object(other):
                 ordinal = self.ordinal + other * self.freq.n
                 return Period(ordinal=ordinal, freq=self.freq)
             else:  # pragma: no cover
@@ -772,11 +763,10 @@ cdef class _Period(object):
     def __sub__(self, other):
         if is_period_object(self):
             if isinstance(other, (timedelta, np.timedelta64,
-                                  offsets.DateOffset,
-                                  Timedelta)):
+                                  offsets.DateOffset)):
                 neg_other = -other
                 return self + neg_other
-            elif lib.is_integer(other):
+            elif util.is_integer_object(other):
                 ordinal = self.ordinal - other * self.freq.n
                 return Period(ordinal=ordinal, freq=self.freq)
             elif is_period_object(other):
@@ -1159,7 +1149,7 @@ class Period(_Period):
             raise ValueError(("Only value or ordinal but not both should be "
                               "given but not both"))
         elif ordinal is not None:
-            if not lib.is_integer(ordinal):
+            if not util.is_integer_object(ordinal):
                 raise ValueError("Ordinal must be an integer")
             if freq is None:
                 raise ValueError('Must supply freq for ordinal value')
@@ -1196,11 +1186,13 @@ class Period(_Period):
         elif is_null_datetimelike(value) or value in tslib._nat_strings:
             ordinal = iNaT
 
-        elif is_string_object(value) or lib.is_integer(value):
-            if lib.is_integer(value):
+        elif is_string_object(value) or util.is_integer_object(value):
+            if util.is_integer_object(value):
                 value = str(value)
             value = value.upper()
             dt, _, reso = parse_time_string(value, freq)
+            if dt is NAT_SENTINEL:
+                ordinal = iNaT
 
             if freq is None:
                 try:

@@ -7,6 +7,7 @@ from pandas._libs import (lib, index as libindex, tslib as libts,
                           algos as libalgos, join as libjoin,
                           Timestamp, Timedelta, )
 from pandas._libs.lib import is_datetime_array
+from pandas._libs.tslibs import parsing
 
 from pandas.compat import range, u
 from pandas.compat.numpy import function as nv
@@ -27,6 +28,7 @@ from pandas.core.dtypes.common import (
     is_integer,
     is_float,
     is_dtype_equal,
+    is_dtype_union_equal,
     is_object_dtype,
     is_categorical_dtype,
     is_interval_dtype,
@@ -56,7 +58,7 @@ import pandas.core.algorithms as algos
 import pandas.core.sorting as sorting
 from pandas.io.formats.printing import pprint_thing
 from pandas.core.ops import _comp_method_OBJECT_ARRAY
-from pandas.core import strings
+from pandas.core import strings, accessor
 from pandas.core.config import get_option
 
 
@@ -121,6 +123,23 @@ class Index(IndexOpsMixin, PandasObject):
     Notes
     -----
     An Index instance can **only** contain hashable objects
+
+    Examples
+    --------
+    >>> pd.Index([1, 2, 3])
+    Int64Index([1, 2, 3], dtype='int64')
+
+    >>> pd.Index(list('abc'))
+    Index(['a', 'b', 'c'], dtype='object')
+
+    See Also
+    ---------
+    RangeIndex : Index implementing a monotonic integer range
+    CategoricalIndex : Index of :class:`Categorical` s.
+    MultiIndex : A multi-level, or hierarchical, Index
+    IntervalIndex : an Index of :class:`Interval` s.
+    DatetimeIndex, TimedeltaIndex, PeriodIndex
+    Int64Index, UInt64Index,  Float64Index
     """
     # To hand over control to subclasses
     _join_precedence = 1
@@ -158,7 +177,7 @@ class Index(IndexOpsMixin, PandasObject):
     _accessors = frozenset(['str'])
 
     # String Methods
-    str = base.AccessorProperty(strings.StringMethods)
+    str = accessor.AccessorProperty(strings.StringMethods)
 
     def __new__(cls, data=None, dtype=None, copy=False, name=None,
                 fastpath=False, tupleize_cols=True, **kwargs):
@@ -847,7 +866,7 @@ class Index(IndexOpsMixin, PandasObject):
         """
         return default_pprint
 
-    def _format_data(self):
+    def _format_data(self, name=None):
         """
         Return the formatted data as a unicode string
         """
@@ -856,9 +875,11 @@ class Index(IndexOpsMixin, PandasObject):
         display_width, _ = get_console_size()
         if display_width is None:
             display_width = get_option('display.width') or 80
+        if name is None:
+            name = self.__class__.__name__
 
-        space1 = "\n%s" % (' ' * (len(self.__class__.__name__) + 1))
-        space2 = "\n%s" % (' ' * (len(self.__class__.__name__) + 2))
+        space1 = "\n%s" % (' ' * (len(name) + 1))
+        space2 = "\n%s" % (' ' * (len(name) + 2))
 
         n = len(self)
         sep = ','
@@ -984,6 +1005,29 @@ class Index(IndexOpsMixin, PandasObject):
                       index=self._shallow_copy(),
                       name=self.name)
 
+    def to_frame(self, index=True):
+        """
+        Create a DataFrame with a column containing the Index.
+
+        .. versionadded:: 0.21.0
+
+        Parameters
+        ----------
+        index : boolean, default True
+            Set the index of the returned DataFrame as the original Index.
+
+        Returns
+        -------
+        DataFrame : a DataFrame containing the original Index data.
+        """
+
+        from pandas import DataFrame
+        result = DataFrame(self._shallow_copy(), columns=[self.name or 0])
+
+        if index:
+            result.index = self
+        return result
+
     def _to_embed(self, keep_tz=False):
         """
         *this is an internal non-public method*
@@ -1034,7 +1078,7 @@ class Index(IndexOpsMixin, PandasObject):
         if self.inferred_type == 'string':
             from dateutil.parser import parse
             parser = lambda x: parse(x, dayfirst=dayfirst)
-            parsed = lib.try_parse_dates(self.values, parser=parser)
+            parsed = parsing.try_parse_dates(self.values, parser=parser)
             return DatetimeIndex(parsed)
         else:
             return DatetimeIndex(self.values)
@@ -2170,7 +2214,11 @@ class Index(IndexOpsMixin, PandasObject):
         if len(self) == 0:
             return other._get_consensus_name(self)
 
-        if not is_dtype_equal(self.dtype, other.dtype):
+        # TODO: is_dtype_union_equal is a hack around
+        # 1. buggy set ops with duplicates (GH #13432)
+        # 2. CategoricalIndex lacking setops (GH #10186)
+        # Once those are fixed, this workaround can be removed
+        if not is_dtype_union_equal(self.dtype, other.dtype):
             this = self.astype('O')
             other = other.astype('O')
             return this.union(other)
@@ -2421,7 +2469,7 @@ class Index(IndexOpsMixin, PandasObject):
         return self._shallow_copy(values)
 
     _index_shared_docs['get_loc'] = """
-        Get integer location for requested label.
+        Get integer location, slice or boolean mask for requested label.
 
         Parameters
         ----------
@@ -2441,8 +2489,22 @@ class Index(IndexOpsMixin, PandasObject):
 
         Returns
         -------
-        loc : int if unique index, possibly slice or mask if not
-    """
+        loc : int if unique index, slice if monotonic index, else mask
+
+        Examples
+        ---------
+        >>> unique_index = pd.Index(list('abc'))
+        >>> unique_index.get_loc('b')
+        1
+
+        >>> monotonic_index = pd.Index(list('abbc'))
+        >>> monotonic_index.get_loc('b')
+        slice(1, 3, None)
+
+        >>> non_monotonic_index = pd.Index(list('abcb'))
+        >>> non_monotonic_index.get_loc('b')
+        array([False,  True, False,  True], dtype=bool)
+        """
 
     @Appender(_index_shared_docs['get_loc'])
     def get_loc(self, key, method=None, tolerance=None):
@@ -2588,6 +2650,12 @@ class Index(IndexOpsMixin, PandasObject):
         if tolerance is not None:
             tolerance = self._convert_tolerance(tolerance)
 
+        # Treat boolean labels passed to a numeric index as not found. Without
+        # this fix False and True would be treated as 0 and 1 respectively.
+        # (GH #16877)
+        if target.is_boolean() and self.is_numeric():
+            return _ensure_platform_int(np.repeat(-1, target.size))
+
         pself, ptarget = self._maybe_promote(target)
         if pself is not self or ptarget is not target:
             return pself.get_indexer(ptarget, method=method, limit=limit,
@@ -2616,7 +2684,6 @@ class Index(IndexOpsMixin, PandasObject):
                                  'backfill or nearest reindexing')
 
             indexer = self._engine.get_indexer(target._values)
-
         return _ensure_platform_int(indexer)
 
     def _convert_tolerance(self, tolerance):
@@ -3545,6 +3612,19 @@ class Index(IndexOpsMixin, PandasObject):
         -------
         start, end : int
 
+        Notes
+        -----
+        This method only works if the index is monotonic or unique.
+
+        Examples
+        ---------
+        >>> idx = pd.Index(list('abcd'))
+        >>> idx.slice_locs(start='b', end='c')
+        (1, 3)
+
+        See Also
+        --------
+        Index.get_loc : Get location for a single label
         """
         inc = (step is None or step >= 0)
 
@@ -3715,7 +3795,7 @@ class Index(IndexOpsMixin, PandasObject):
     def _evaluate_with_datetime_like(self, other, op, opstr):
         raise TypeError("can only perform ops with datetime like values")
 
-    def _evalute_compare(self, op):
+    def _evaluate_compare(self, op):
         raise base.AbstractMethodError(self)
 
     @classmethod

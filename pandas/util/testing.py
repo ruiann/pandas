@@ -41,8 +41,6 @@ from pandas.compat import (
     StringIO, PY3
 )
 
-from pandas.core.computation import expressions as expr
-
 from pandas import (bdate_range, CategoricalIndex, Categorical, IntervalIndex,
                     DatetimeIndex, TimedeltaIndex, PeriodIndex, RangeIndex,
                     Index, MultiIndex,
@@ -401,21 +399,6 @@ def _skip_if_no_localpath():
     except ImportError:
         import pytest
         pytest.skip("py.path not installed")
-
-
-def _incompat_bottleneck_version(method):
-    """ skip if we have bottleneck installed
-    and its >= 1.0
-    as we don't match the nansum/nanprod behavior for all-nan
-    ops, see GH9422
-    """
-    if method not in ['sum', 'prod']:
-        return False
-    try:
-        import bottleneck as bn
-        return bn.__version__ >= LooseVersion('1.0')
-    except ImportError:
-        return False
 
 
 def skip_if_no_ne(engine='numexpr'):
@@ -1244,7 +1227,14 @@ def assert_series_equal(left, right, check_dtype=True,
                        obj='{obj}.index'.format(obj=obj))
 
     if check_dtype:
-        assert_attr_equal('dtype', left, right)
+        # We want to skip exact dtype checking when `check_categorical`
+        # is False. We'll still raise if only one is a `Categorical`,
+        # regardless of `check_categorical`
+        if (is_categorical_dtype(left) and is_categorical_dtype(right) and
+                not check_categorical):
+            pass
+        else:
+            assert_attr_equal('dtype', left, right)
 
     if check_exact:
         assert_numpy_array_equal(left.get_values(), right.get_values(),
@@ -1378,8 +1368,8 @@ def assert_frame_equal(left, right, check_dtype=True,
 
     # compare by blocks
     if by_blocks:
-        rblocks = right.blocks
-        lblocks = left.blocks
+        rblocks = right._to_dict_of_blocks()
+        lblocks = left._to_dict_of_blocks()
         for dtype in list(set(list(lblocks.keys()) + list(rblocks.keys()))):
             assert dtype in lblocks
             assert dtype in rblocks
@@ -1892,7 +1882,7 @@ def makeCustomIndex(nentries, nlevels, prefix='#', names=False, ndupe_l=None,
     for i in range(nlevels):
         def keyfunc(x):
             import re
-            numeric_tuple = re.sub("[^\d_]_?", "", x).split("_")
+            numeric_tuple = re.sub(r"[^\d_]_?", "", x).split("_")
             return lmap(int, numeric_tuple)
 
         # build a list of lists to create the index from
@@ -2427,7 +2417,7 @@ def stdin_encoding(encoding=None):
 
 def assert_raises_regex(_exception, _regexp, _callable=None,
                         *args, **kwargs):
-    """
+    r"""
     Check that the specified Exception is raised and that the error message
     matches a given regular expression pattern. This may be a regular
     expression object or a string containing a regular expression suitable
@@ -2653,7 +2643,11 @@ class RNGContext(object):
 
 
 @contextmanager
-def use_numexpr(use, min_elements=expr._MIN_ELEMENTS):
+def use_numexpr(use, min_elements=None):
+    from pandas.core.computation import expressions as expr
+    if min_elements is None:
+        min_elements = expr._MIN_ELEMENTS
+
     olduse = expr._USE_NUMEXPR
     oldmin = expr._MIN_ELEMENTS
     expr.set_use_numexpr(use)

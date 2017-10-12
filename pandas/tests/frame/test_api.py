@@ -69,7 +69,9 @@ class SharedWithSparse(object):
     def test_get_value(self):
         for idx in self.frame.index:
             for col in self.frame.columns:
-                result = self.frame.get_value(idx, col)
+                with tm.assert_produces_warning(FutureWarning,
+                                                check_stacklevel=False):
+                    result = self.frame.get_value(idx, col)
                 expected = self.frame[col][idx]
                 tm.assert_almost_equal(result, expected)
 
@@ -213,8 +215,8 @@ class SharedWithSparse(object):
         assert (list(dfaa.itertuples()) ==
                 [(0, 1, 1), (1, 2, 2), (2, 3, 3)])
 
-        # repr with be int/long on windows
-        if not compat.is_platform_windows():
+        # repr with be int/long on 32-bit/windows
+        if not (compat.is_platform_windows() or compat.is_platform_32bit()):
             assert (repr(list(df.itertuples(name=None))) ==
                     '[(0, 1, 4), (1, 2, 5), (2, 3, 6)]')
 
@@ -438,3 +440,14 @@ class TestDataFrameMisc(SharedWithSparse, TestData):
         # rename
         f = lambda x: x.rename({1: 'foo'}, inplace=True)
         _check_f(d.copy(), f)
+
+    def test_tab_complete_warning(self, ip):
+        # https://github.com/pandas-dev/pandas/issues/16409
+        pytest.importorskip('IPython', minversion="6.0.0")
+        from IPython.core.completer import provisionalcompleter
+
+        code = "import pandas as pd; df = pd.DataFrame()"
+        ip.run_code(code)
+        with tm.assert_produces_warning(None):
+            with provisionalcompleter('ignore'):
+                list(ip.Completer.completions('df.', 1))

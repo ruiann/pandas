@@ -23,9 +23,14 @@ from pandas.core.indexes.numeric import Int64Index
 class RangeIndex(Int64Index):
 
     """
-    Immutable Index implementing a monotonic range. RangeIndex is a
-    memory-saving special case of Int64Index limited to representing
-    monotonic ranges.
+    Immutable Index implementing a monotonic integer range.
+
+    RangeIndex is a memory-saving special case of Int64Index limited to
+    representing monotonic ranges. Using RangeIndex may in some instances
+    improve computing speed.
+
+    This is the default index type used
+    by DataFrame and Series when no explicit index is provided by the user.
 
     Parameters
     ----------
@@ -38,6 +43,10 @@ class RangeIndex(Int64Index):
     copy : bool, default False
         Unused, accepted for homogeneity with other index types.
 
+    See Also
+    --------
+    Index : The base pandas Index type
+    Int64Index : Index of int64 data
     """
 
     _typ = 'rangeindex'
@@ -189,7 +198,7 @@ class RangeIndex(Int64Index):
             attrs.append(('name', ibase.default_pprint(self.name)))
         return attrs
 
-    def _format_data(self):
+    def _format_data(self, name=None):
         # we are formatting thru the attributes
         return None
 
@@ -268,6 +277,24 @@ class RangeIndex(Int64Index):
             name = self.name
         return RangeIndex(name=name, fastpath=True,
                           **dict(self._get_data_as_items()))
+
+    def _minmax(self, meth):
+        no_steps = len(self) - 1
+        if no_steps == -1:
+            return np.nan
+        elif ((meth == 'min' and self._step > 0) or
+              (meth == 'max' and self._step < 0)):
+            return self._start
+
+        return self._start + self._step * no_steps
+
+    def min(self):
+        """The minimum value of the RangeIndex"""
+        return self._minmax('min')
+
+    def max(self):
+        """The maximum value of the RangeIndex"""
+        return self._minmax('max')
 
     def argsort(self, *args, **kwargs):
         """

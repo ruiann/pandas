@@ -141,7 +141,7 @@ class _Window(PandasObject, SelectionMixin):
             if obj.ndim == 2:
                 obj = obj.reindex(columns=obj.columns.difference([self.on]),
                                   copy=False)
-        blocks = obj.as_blocks(copy=False).values()
+        blocks = obj._to_dict_of_blocks(copy=False).values()
 
         return blocks, obj, index
 
@@ -1138,8 +1138,8 @@ class Rolling(_Rolling_and_Expanding):
         try:
             return to_offset(self.window)
         except (TypeError, ValueError):
-            raise ValueError("passed window {0} in not "
-                             "compat with a datetimelike "
+            raise ValueError("passed window {0} is not "
+                             "compatible with a datetimelike "
                              "index".format(self.window))
 
     _agg_doc = dedent("""

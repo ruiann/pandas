@@ -15,7 +15,6 @@ from pandas.core.dtypes.common import (
     is_string_like, is_scalar)
 from pandas.core.dtypes.missing import notna
 
-import pandas.core.computation.expressions as expressions
 import pandas.core.common as com
 import pandas.core.ops as ops
 import pandas.core.missing as missing
@@ -40,7 +39,8 @@ from pandas.util._decorators import (deprecate, Appender)
 _shared_doc_kwargs = dict(
     axes='items, major_axis, minor_axis',
     klass="Panel",
-    axes_single_arg="{0, 1, 2, 'items', 'major_axis', 'minor_axis'}")
+    axes_single_arg="{0, 1, 2, 'items', 'major_axis', 'minor_axis'}",
+    optional_mapper='', optional_axis='', optional_labels='')
 _shared_doc_kwargs['args_transpose'] = ("three positional arguments: each one"
                                         "of\n%s" %
                                         _shared_doc_kwargs['axes_single_arg'])
@@ -471,6 +471,10 @@ class Panel(NDFrame):
         """
         Quickly retrieve single value at (item, major, minor) location
 
+        .. deprecated:: 0.21.0
+
+        Please use .at[] or .iat[] accessors.
+
         Parameters
         ----------
         item : item label (panel item)
@@ -482,6 +486,13 @@ class Panel(NDFrame):
         -------
         value : scalar value
         """
+        warnings.warn("get_value is deprecated and will be removed "
+                      "in a future release. Please use "
+                      ".at[] or .iat[] accessors instead", FutureWarning,
+                      stacklevel=2)
+        return self._get_value(*args, **kwargs)
+
+    def _get_value(self, *args, **kwargs):
         nargs = len(args)
         nreq = self._AXIS_LEN
 
@@ -501,11 +512,16 @@ class Panel(NDFrame):
         else:
             lower = self._get_item_cache(args[0])
 
-        return lower.get_value(*args[1:], takeable=takeable)
+        return lower._get_value(*args[1:], takeable=takeable)
+    _get_value.__doc__ = get_value.__doc__
 
     def set_value(self, *args, **kwargs):
         """
         Quickly set single value at (item, major, minor) location
+
+        .. deprecated:: 0.21.0
+
+        Please use .at[] or .iat[] accessors.
 
         Parameters
         ----------
@@ -521,6 +537,13 @@ class Panel(NDFrame):
             If label combo is contained, will be reference to calling Panel,
             otherwise a new object
         """
+        warnings.warn("set_value is deprecated and will be removed "
+                      "in a future release. Please use "
+                      ".at[] or .iat[] accessors instead", FutureWarning,
+                      stacklevel=2)
+        return self._set_value(*args, **kwargs)
+
+    def _set_value(self, *args, **kwargs):
         # require an arg for each axis and the value
         nargs = len(args)
         nreq = self._AXIS_LEN + 1
@@ -541,7 +564,7 @@ class Panel(NDFrame):
             else:
                 lower = self._get_item_cache(args[0])
 
-            lower.set_value(*args[1:], takeable=takeable)
+            lower._set_value(*args[1:], takeable=takeable)
             return self
         except KeyError:
             axes = self._expand_axes(args)
@@ -554,7 +577,8 @@ class Panel(NDFrame):
             if made_bigger:
                 maybe_cast_item(result, args[0], likely_dtype)
 
-            return result.set_value(*args)
+            return result._set_value(*args)
+    _set_value.__doc__ = set_value.__doc__
 
     def _box_item_values(self, key, values):
         if self.ndim == values.ndim:
@@ -1173,13 +1197,21 @@ class Panel(NDFrame):
         return self._construct_return_type(result, axes)
 
     @Appender(_shared_docs['reindex'] % _shared_doc_kwargs)
-    def reindex(self, items=None, major_axis=None, minor_axis=None, **kwargs):
+    def reindex(self, labels=None,
+                items=None, major_axis=None, minor_axis=None,
+                axis=None, **kwargs):
         major_axis = (major_axis if major_axis is not None else
                       kwargs.pop('major', None))
         minor_axis = (minor_axis if minor_axis is not None else
                       kwargs.pop('minor', None))
-        return super(Panel, self).reindex(items=items, major_axis=major_axis,
-                                          minor_axis=minor_axis, **kwargs)
+        axes = self._validate_axis_style_args(
+            labels, 'labels', axes=[items, major_axis, minor_axis],
+            axis=axis, method_name='reindex')
+        if self.ndim >= 4:
+            # Hack for PanelND
+            axes = {}
+        kwargs.update(axes)
+        return super(Panel, self).reindex(**kwargs)
 
     @Appender(_shared_docs['rename'] % _shared_doc_kwargs)
     def rename(self, items=None, major_axis=None, minor_axis=None, **kwargs):
@@ -1500,9 +1532,11 @@ Returns
         def _panel_arith_method(op, name, str_rep=None, default_axis=None,
                                 fill_zeros=None, **eval_kwargs):
             def na_op(x, y):
+                import pandas.core.computation.expressions as expressions
+
                 try:
                     result = expressions.evaluate(op, str_rep, x, y,
-                                                  raise_on_error=True,
+                                                  errors='raise',
                                                   **eval_kwargs)
                 except TypeError:
                     result = op(x, y)
